@@ -53,6 +53,21 @@ function send(method, params = {}) {
 
 await send('Runtime.enable')
 
+/* VIEWPORT="1920x1032" —— 强制页面视口，好让不同环境的尺寸对比是同一基准
+   （不依赖窗口边框、标题栏这些会把视口改小一圈的东西）。 */
+const VIEWPORT = process.env.VIEWPORT ?? ''
+if (VIEWPORT !== '') {
+  const [vw, vh] = VIEWPORT.split('x').map((v) => Number(v.trim()))
+  if (Number.isFinite(vw) && Number.isFinite(vh)) {
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: vw,
+      height: vh,
+      deviceScaleFactor: 1,
+      mobile: false,
+    })
+  }
+}
+
 /* MOUSE_MOVES="x,y;x,y" —— 用浏览器**真实输入管线**移动指针。
    注意不能靠页面里 dispatchEvent 合成 MouseEvent：preload 跑在隔离世界（isolated world），
    主世界合成的 isTrusted=false 事件不会传到那边的 listener，只有真实输入才会。 */

@@ -36,9 +36,11 @@ window.addEventListener('error', function (e) {
 
 <!--
   白名单：想搬到桌面上的「独立型」插件前端，用相对路径（必须与 DSH 同源）。
-  加一个就多挂一个 —— 但只有自己 createElement、自己挂 body、只用相对路径 fetch、
-  不依赖 DSH 特有全局的前端能在这里跑起来。
+  host 半边渲染这一页时会把下面的占位符换成对应的 script 标签
+  （名单在 plugin/lib/index.js 的 WHITELIST）——加一个就多挂一个，
+  但只有自己 createElement、自己挂 body、只用相对路径 fetch、不依赖 DSH 特有全局的前端
+  能在这里跑起来；插槽型前端需要 DSH 的 slot 运行时，搬不过来。
 -->
-<script src="/dsh-whale/widget.js"></script>
+<!--WHITELIST-->
 </body>
 </html>

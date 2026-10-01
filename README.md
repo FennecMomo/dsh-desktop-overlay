@@ -227,6 +227,44 @@ DSH 的 host 跑在一个进程里，**窗口却属于另一个进程**（Electr
 `$PID` 是 PowerShell 的只读自动变量，`param([int]$Pid)` 一绑定就失败：
 `Cannot overwrite variable Pid because it is read-only or constant`。改叫 `-TargetPid`。
 
+## 挂件尺寸：为什么不一定是「两边一样大」
+
+挂件自己的尺寸公式（前端 CSS）：
+
+```
+--dshw-base: clamp(122px, calc(min(250px, min(100vw, 100vh) * 0.28) * var(--dshw-scale)), 625px)
+```
+
+`min(250px, …)` 是**上限保护**：只有视口最小边 ≥ 893px 时才顶到 250。
+
+- overlay 窗口**永远铺满工作区**（本机 1920×1032）→ 恒为 `250 × scale`；
+- DSH 窗口若**不是最大化**（最小边 < 893）→ 退化成 `视口 × 0.28 × scale`，会小一圈。
+
+实测对照（同一份挂件、视口都锁 1920×1032、DPR 1、`.dshw-size.json` 里 scale=1.5）：
+
+| 环境 | `--dshw-scale` | `.dshwv-root` 实测宽度 |
+| --- | --- | --- |
+| overlay 页面 | 1.5 | **375px** |
+| DSH 页面 | 1.5 | **375px** |
+
+顺带排除的嫌疑：两边 DPI 都是 96（100% 缩放）、`devicePixelRatio` 都是 1、
+都没有 Chromium 的 per-host zoom、DSH 主进程命令行里也没有 `--force-device-scale-factor`。
+
+**结论：两边的尺寸规则完全相同；「桌面版大一圈」通常来自 DSH 窗口没有最大化。**
+
+## 坑 6：按命令行子串过滤进程，会匹配到自己
+
+```powershell
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*某个关键字*' }
+```
+
+会连**正在执行这条命令的进程自己**一起匹配到 —— 尤其是 DSH 的 subprocess runner
+（进程名同样是 `DeepSeek Harness.exe`，而命令行里还印着整段脚本内容）。
+
+表现：命令报 `subprocess-local: Windows Job runner exited with exit code 4294967295`，
+其实是那条命令**把自己的 runner 杀了**。所以：过滤时务必再限定进程名
+（如 `Name='msedge.exe'`），也**不要用会出现在自己命令行里的关键字去杀进程**。
+
 ## 落地计划
 
 | 步骤 | 做什么 | 状态 |
@@ -235,7 +273,7 @@ DSH 的 host 跑在一个进程里，**窗口却属于另一个进程**（Electr
 | 2 | 搭 Electron 外壳（复用 DSH 运行时），全屏透明 + 置顶 + 动态穿透 | ✅ **完成** |
 | 3 | 把第 1 步的页面接进 overlay，用带凭据的 URL 打开 | ✅ **完成** |
 | 4 | 跟随 DSH：最小化/进托盘 → 浮出，恢复 → 藏起，退出 → 收尾 | ✅ **完成** |
-| 5 | host 插件自动拉起外壳 + 白名单做成配置（**需要重启 DSH 客户端才能验证**） | 未开始 |
+| 5 | host 插件随 DSH 启动自动拉起外壳；白名单集中在 `WHITELIST` | ✅ 已实现，**待重启 DSH 客户端验证** |
 
 ## 目录
 
