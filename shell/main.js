@@ -1,0 +1,237 @@
+/**
+ * dsh-desktop-overlay —— Electron 外壳（主进程）
+ *
+ * 职责四件事：
+ *
+ *   1. 开一个「透明 + 无边框 + 铺满工作区 + 置顶 + 不进任务栏」的窗口，尺寸锁死不可调。
+ *   2. **常驻鼠标穿透**，只有指针落在可交互区域时才临时关掉（判断在渲染进程做）。
+ *   3. 用 `screen.getCursorScreenPoint()` **主动轮询光标**驱动上面的判断 ——
+ *      不能靠 DOM 的 mousemove：Windows 上 `setIgnoreMouseEvents(true, { forward: true })`
+ *      并不会把 mousemove 送进渲染进程（实测 `movesSeen` 恒为 0，连真实光标也一样），
+ *      文档只承诺转发 `mouseleave` 那类事件。穿透只影响输入事件，不影响 IPC，
+ *      所以轮询这条路是通的。
+ *   4. 先建立会话再加载页面：DSH 的 token **只在 index 请求上生效**（会 303 + Set-Cookie），
+ *      所以先拿 login URL 换 cookie，再导航到真正的 overlay 页面。
+ *
+ * 运行时复用 DSH 自带的那份 Electron 44（见 README），Chromium 行为与 DSH 完全一致。
+ *
+ * ⚠️ 用宿主进程拉起这个外壳时，必须清掉继承来的 `ELECTRON_RUN_AS_NODE`，
+ *    否则 exe 会以 Node 模式启动并报 `bad option` 直接退出（exit 9）。
+ */
+const { app, BrowserWindow, ipcMain, screen, session, net, globalShortcut } = require('electron')
+const path = require('node:path')
+const fs = require('node:fs')
+
+/** 光标轮询间隔：25Hz 足够跟手，又不至于把 CPU 吃满。 */
+const CURSOR_POLL_MS = 40
+const STATUS_FILE = path.join(__dirname, '.shell-status.json')
+
+const argv = process.argv.slice(2)
+function option(name, fallback) {
+  const index = argv.indexOf(name)
+  return index >= 0 && argv[index + 1] !== undefined ? argv[index + 1] : fallback
+}
+const LOGIN_URL = option('--login', process.env.DSH_OVERLAY_LOGIN ?? '')
+const PAGE_URL = option('--page', process.env.DSH_OVERLAY_PAGE ?? '')
+const TEST_MODE = argv.includes('--test')
+
+let win = null
+let winBounds = null
+let bootInfo = {}
+let interactive = false
+let cursorTimer = null
+let statusTimer = null
+let lastCursor = null
+let cursorSends = 0
+
+/* GUI 子系统的程序在 Windows 上拿不到 stdout（管道会被丢掉），所以状态一律落文件，
+   否则排查时只剩「窗口没出现」这一条线索。 */
+function writeStatus() {
+  try {
+    fs.writeFileSync(
+      STATUS_FILE,
+      JSON.stringify(
+        { at: new Date().toISOString(), ...bootInfo, interactive, cursorSends, lastCursor },
+        null,
+        2,
+      ),
+      'utf8',
+    )
+  } catch {
+    /* 写不进去就算了，不影响运行。 */
+  }
+}
+
+/** 用 net 请求换会话 cookie —— 不渲染 DSH 的 SPA，只是把 Set-Cookie 收进 session。 */
+async function establishSession(url) {
+  let origin
+  try {
+    const parsed = new URL(url)
+    origin = `${parsed.protocol}//${parsed.host}`
+  } catch {
+    return { ok: false, cookies: 0, via: 'bad-url' }
+  }
+
+  const existing = await session.defaultSession.cookies.get({ url: origin })
+  if (existing.length > 0) return { ok: true, cookies: existing.length, via: 'existing' }
+
+  try {
+    await new Promise((resolve, reject) => {
+      const request = net.request({
+        url,
+        session: session.defaultSession,
+        /* 关键：默认 false 时用的是内存 cookie，Set-Cookie 不会进 session。 */
+        useSessionCookies: true,
+        redirect: 'follow',
+      })
+      request.on('response', (response) => {
+        response.on('data', () => {}) // 丢掉 body，我们只要 cookie
+        response.on('end', resolve)
+        response.on('error', reject)
+      })
+      request.on('error', reject)
+      request.end()
+    })
+  } catch (error) {
+    console.error('[shell] net 换 cookie 失败：', String(error?.message ?? error))
+  }
+
+  const after = await session.defaultSession.cookies.get({ url: origin })
+  return { ok: after.length > 0, cookies: after.length, via: 'net' }
+}
+
+function createWindow() {
+  const { x, y, width, height } = screen.getPrimaryDisplay().workArea
+
+  win = new BrowserWindow({
+    x,
+    y,
+    width,
+    height,
+    transparent: true,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    show: false,
+    /* 全屏置顶窗不要在启动时抢焦点，否则会打断用户正在做的事。 */
+    focusable: true,
+    alwaysOnTop: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  })
+
+  win.setAlwaysOnTop(true, 'screen-saver')
+  win.setIgnoreMouseEvents(true, { forward: true })
+  win.once('ready-to-show', () => win.showInactive())
+
+  win.webContents.on('did-fail-load', (_event, code, description, url) => {
+    console.error(`[shell] 页面加载失败 ${String(code)} ${description} ${url}`)
+  })
+
+  return { x, y, width, height }
+}
+
+/** 轮询光标，把窗口内坐标发给渲染进程，由它回答「这里该不该可交互」。 */
+function startCursorWatch() {
+  if (cursorTimer !== null) clearInterval(cursorTimer)
+  cursorTimer = setInterval(() => {
+    if (win === null || win.isDestroyed() || winBounds === null) return
+    const point = screen.getCursorScreenPoint()
+    if (lastCursor !== null && point.x === lastCursor.x && point.y === lastCursor.y) return
+    lastCursor = { x: point.x, y: point.y }
+    const inside =
+      point.x >= winBounds.x &&
+      point.y >= winBounds.y &&
+      point.x < winBounds.x + winBounds.width &&
+      point.y < winBounds.y + winBounds.height
+    if (!inside) {
+      setInteractive(false)
+      return
+    }
+    cursorSends += 1
+    win.webContents.send('overlay:cursor', { x: point.x - winBounds.x, y: point.y - winBounds.y })
+  }, CURSOR_POLL_MS)
+}
+
+/** 每秒把运行状态落盘，用来判断「主进程到底有没有在发」。 */
+function startStatusWatch() {
+  if (statusTimer !== null) clearInterval(statusTimer)
+  statusTimer = setInterval(writeStatus, 1000)
+}
+
+function setInteractive(next) {
+  const value = next === true
+  if (win === null || win.isDestroyed() || value === interactive) return
+  interactive = value
+  win.setIgnoreMouseEvents(!value, { forward: true })
+}
+
+async function boot() {
+  winBounds = createWindow()
+
+  let sessionInfo = { ok: false, cookies: 0, via: 'none' }
+  if (LOGIN_URL !== '') sessionInfo = await establishSession(LOGIN_URL)
+
+  if (!sessionInfo.ok && LOGIN_URL !== '' && !TEST_MODE) {
+    /* 兜底：net 那条路没拿到 cookie，就真的加载一次 login（会短暂显示 DSH 界面）。 */
+    console.warn('[shell] net 没拿到会话 cookie，退回 loadURL(login)')
+    await win.loadURL(LOGIN_URL).catch(() => {})
+    const cookies = await session.defaultSession.cookies.get({ url: LOGIN_URL }).catch(() => [])
+    sessionInfo = { ok: cookies.length > 0, cookies: cookies.length, via: 'loadURL' }
+  }
+
+  const target = TEST_MODE ? `file://${path.join(__dirname, 'test.html').replace(/\\/g, '/')}` : PAGE_URL
+
+  if (target !== '') {
+    try {
+      await win.loadURL(target)
+    } catch (error) {
+      console.error('[shell] 加载失败：', String(error?.message ?? error))
+    }
+  }
+
+  bootInfo = { shell: 'main-v2', bounds: winBounds, session: sessionInfo, page: target }
+  startCursorWatch()
+  startStatusWatch()
+  writeStatus()
+
+  console.log(
+    `[shell] 窗口 ${String(winBounds.width)}x${String(winBounds.height)} @ ${String(winBounds.x)},${String(winBounds.y)}` +
+      ` | 会话 ${sessionInfo.ok ? 'ok' : 'no'}(${String(sessionInfo.cookies)} cookies via ${sessionInfo.via})` +
+      ` | 页面 ${target}`,
+  )
+}
+
+/* 渲染进程回答「当前指针位置可不可交互」。 */
+ipcMain.on('overlay:hit', (_event, value) => setInteractive(value === true))
+
+/* 调试用：强制设置穿透状态。 */
+ipcMain.on('overlay:interactive', (_event, value) => setInteractive(value === true))
+
+/* 页面里主动请求退出（调试期很好用）。 */
+ipcMain.on('overlay:quit', () => app.quit())
+
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.whenReady().then(async () => {
+    await boot()
+    /* 调试逃生口：Ctrl+Alt+Q 关掉 overlay。 */
+    globalShortcut.register('Control+Alt+Q', () => {
+      console.log('[shell] Ctrl+Alt+Q -> 退出')
+      app.quit()
+    })
+  })
+
+  app.on('window-all-closed', () => app.quit())
+}

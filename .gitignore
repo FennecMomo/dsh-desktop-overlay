@@ -2,6 +2,7 @@ node_modules/
 runtime/
 .launch-url.txt
 docs/*.png
+shell/.shell-status.json
 dist/
 *.log
 .panel-*.json

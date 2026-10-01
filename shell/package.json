@@ -1,0 +1,6 @@
+{
+  "name": "dsh-desktop-overlay-shell",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js"
+}

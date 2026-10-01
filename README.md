@@ -138,12 +138,51 @@ node tools/cdp-probe.mjs
 结论：**「独立型」前端脱离 DSH 的 SPA 之后功能完整** —— 它对 DSH 页面结构的依赖，只有启动闸门那一处。
 （证据截图：`docs/step1-rendered.png`、`docs/step1-clicked.png`，不入 git。）
 
+## 步骤 2 的验证结果（外壳，已完成）
+
+外壳跑起来了（复用 DSH 那份 Electron 44），窗口铺满工作区（1920×1032），标志位实测：
+
+| 检查项 | 结果 |
+| --- | --- |
+| `WS_EX_LAYERED`（透明） | ✅ True |
+| `WS_EX_TOPMOST`（置顶） | ✅ True |
+| `WS_EX_TRANSPARENT`（穿透，随光标切换） | ✅ 随判定实时变化 |
+| 窗口尺寸 | ✅ 铺满工作区，`resizable:false` 锁死 |
+| 动态穿透 | ✅ 光标在角色上 → 关穿透；在空白处 → 开穿透 |
+| **真实点击** | ✅ 真实光标 + `mouse_event` 点击角色，页面计数器 0 → 2 |
+
+### 坑 1：继承 `ELECTRON_RUN_AS_NODE` 会让外壳以 Node 模式启动
+
+DSH 派生的子进程带着 `ELECTRON_RUN_AS_NODE=1`，于是 `DeepSeek Harness.exe` 被当成 node 跑，
+报 `bad option: --remote-debugging-port=…` 后 exit 9 —— 看起来像「窗口起不来」，
+其实根本没进 Electron。**拉起外壳前必须清掉这个变量**（第 4 步用宿主插件 spawn 时同理）。
+
+### 坑 2：Windows 上 `setIgnoreMouseEvents(true, { forward: true })` 不转发 mousemove
+
+这条最要命。文档只承诺转发 `mouseleave` 那类事件，实测**渲染进程收不到 mousemove**
+（`movesSeen` 恒为 0，真实光标也一样，与 CDP 注入无关）。也就是说「靠 DOM 事件驱动穿透」
+在 Windows 上不成立。
+
+改用**主进程轮询**：`screen.getCursorScreenPoint()` 25Hz → IPC 送窗口内坐标 →
+preload 用 `elementFromPoint` 判断 → 回报切换穿透。穿透只影响**输入事件**，
+不影响 **IPC** 和渲染，所以这条路是通的。
+
+> 顺带一个诊断陷阱：CDP 的 `Input.dispatchMouseEvent` 注入的事件**只到主世界**，
+> 到不了 preload 的隔离世界（`checks` 不动）；而且页面 reload 后
+> `window.dshOverlay.state` 可能读到旧实例，显示成 `checks: 0` 的假象 ——
+> 判断 preload 是否真的在工作，看**主进程侧的状态文件**和页面 `document.title` 更靠谱。
+
+### 小瑕疵
+
+`skipTaskbar: true` 没让 `WS_EX_TOOLWINDOW` 生效（任务栏仍会出现图标），
+后续显式调一次 `win.setSkipTaskbar(true)` 再看。
+
 ## 落地计划
 
 | 步骤 | 做什么 | 状态 |
 | --- | --- | --- |
 | 1 | host 插件注册一条 overlay route（极简 HTML + 引入白名单前端脚本），验证插件前端脱离 DSH SPA 能否跑、数据对不对 | ✅ **完成**（渲染 / 数据 / 交互全通过） |
-| 2 | 搭 Electron 外壳（复用 DSH 运行时），全屏透明 + 置顶 + 动态穿透，先加载静态页测窗口行为 | 未开始 |
+| 2 | 搭 Electron 外壳（复用 DSH 运行时），全屏透明 + 置顶 + 动态穿透，先加载静态页测窗口行为 | ✅ **完成**（含真实点击验证） |
 | 3 | 把第 1 步的页面接进 overlay，用带凭据的 URL 打开 | 未开始 |
 | 4 | 白名单机制 + 生命周期（谁拉起、DSH 退出怎么收尾） | 未开始 |
 

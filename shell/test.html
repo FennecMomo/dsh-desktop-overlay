@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>overlay shell self-test</title>
+<style>
+  /* 透明窗口里页面自身不能有底色，否则整块屏幕被盖住。 */
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font: 13px/1.6 system-ui, "Segoe UI", sans-serif; color: #203170; }
+
+  /* 信息面板（可交互区域之一，方便确认「穿透关掉了」这件事真的生效） */
+  .panel {
+    position: fixed; left: 24px; top: 24px; padding: 10px 14px;
+    background: rgba(255, 255, 255, .92); border: 1px solid rgba(32, 49, 112, .35);
+    border-radius: 10px; box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
+  }
+  .panel b { color: #0a7d55; }
+
+  /* 右下角的「假角色」：用来验证可交互区域能被点到 */
+  .role {
+    position: fixed; right: 40px; bottom: 40px; width: 120px; height: 120px;
+    border-radius: 50%; background: rgba(90, 140, 255, .85);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 600; cursor: pointer; user-select: none;
+    border: 3px solid rgba(255, 255, 255, .8);
+  }
+  .role:active { transform: scale(.96); }
+</style>
+</head>
+<body>
+<div class="panel">
+  <div>窗口 <b id="size">-</b></div>
+  <div>穿透状态 <b id="mode">穿透中（点不到）</b></div>
+  <div>假角色被点 <b id="hits">0</b> 次</div>
+  <div style="opacity:.65">Ctrl+Alt+Q 退出 overlay</div>
+</div>
+
+<div class="role" id="role">点我</div>
+
+<script>
+  document.getElementById('size').textContent = innerWidth + 'x' + innerHeight
+
+  let hits = 0
+  document.getElementById('role').addEventListener('click', function () {
+    hits += 1
+    document.getElementById('hits').textContent = String(hits)
+  })
+
+  /* 实时显示穿透状态：鼠标移到信息面板或假角色上时，preload 会把穿透关掉，
+     此时这里应当立刻变成「可交互」。 */
+  const mode = document.getElementById('mode')
+  let last = null
+  setInterval(function () {
+    const next = window.dshOverlay ? String(window.dshOverlay.state.interactive) : 'no-bridge'
+    if (next !== last) {
+      last = next
+      mode.textContent = next === 'true' ? '可交互（点得到）' : '穿透中（点不到）'
+    }
+  }, 100)
+</script>
+</body>
+</html>
