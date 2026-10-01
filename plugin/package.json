@@ -1,0 +1,13 @@
+{
+  "name": "dsh-desktop-overlay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "description": "把 DSH 独立型插件的前端搬到桌面 overlay 窗口（透明、置顶、动态穿透）",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

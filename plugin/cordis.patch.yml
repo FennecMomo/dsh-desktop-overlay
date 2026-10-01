@@ -1,0 +1,8 @@
+# dsh-desktop-overlay —— DSH bundle patch
+#
+# 挂载声明：把 host 半边插进当前 profile 的配置树。
+# 开发期安装：dsh plugin --profile <profile> add link:<项目>/plugin
+
+- insert:
+    - id: dsh-desktop-overlay
+      name: dsh-desktop-overlay
