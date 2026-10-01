@@ -27,10 +27,27 @@ const CURSOR_POLL_MS = 40
 const STATUS_FILE = path.join(__dirname, '.shell-status.json')
 
 const argv = process.argv.slice(2)
+
+/**
+ * 取一个开关的值，`--name value` 与 `--name=value` 两种写法都支持。
+ *
+ * ⚠️ 调用方**必须**用 `--name=value`：Electron 会把命令行里的**裸参数**（没有 `--` 前缀的
+ * 那个）当作 app 路径去加载，于是 `--login <url>` 里的 URL 会变成"app 路径"，
+ * 外壳直接静默退出（stdout/stderr 什么都没有，exit 9 或空值）。
+ */
 function option(name, fallback) {
-  const index = argv.indexOf(name)
-  return index >= 0 && argv[index + 1] !== undefined ? argv[index + 1] : fallback
+  const prefix = `${name}=`
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index]
+    if (current === name) {
+      const next = argv[index + 1]
+      return next !== undefined && !next.startsWith('--') ? next : fallback
+    }
+    if (current.startsWith(prefix)) return current.slice(prefix.length)
+  }
+  return fallback
 }
+
 const LOGIN_URL = option('--login', process.env.DSH_OVERLAY_LOGIN ?? '')
 const PAGE_URL = option('--page', process.env.DSH_OVERLAY_PAGE ?? '')
 const TEST_MODE = argv.includes('--test')

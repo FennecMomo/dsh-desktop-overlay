@@ -177,13 +177,35 @@ preload 用 `elementFromPoint` 判断 → 回报切换穿透。穿透只影响**
 `skipTaskbar: true` 没让 `WS_EX_TOOLWINDOW` 生效（任务栏仍会出现图标），
 后续显式调一次 `win.setSkipTaskbar(true)` 再看。
 
+## 步骤 3 的验证结果（真实页面，已完成）
+
+外壳以真实模式启动（`--login=<带 token 的 index URL>` `--page=<overlay 页面>`）：
+
+| 检查项 | 结果 |
+| --- | --- |
+| 会话 | ✅ `net + useSessionCookies` 换到 `dsh-auth-*`（1 条），**不渲染 DSH 的 SPA** |
+| 挂件初始化 | ✅ 229 个挂件节点，`.dshwv-root` 就位 |
+| 页面内数据 | ✅ `fetch('/dsh-whale/balance.json')` → 200，真实余额 / 今日已用 |
+| 每轮消耗提示 | ✅ 截图里泡泡显示「上一轮对话消耗 ¥0.01 · 今日已用 ¥1.52」 |
+| 穿透判定 | ✅ 光标在鲸鱼上 → `elementFromPoint` 命中 `IMG.dshwv-img` → 关穿透；移到空白 → 开穿透 |
+
+证据截图：`docs/step3-overlay-real.png`（不入 git）。
+
+### 坑 3：Electron 会把「裸参数」当成 app 路径
+
+`--login <url>` 这种写法里，那个 URL 是**游离参数**，Electron 把它当 app 路径去加载，
+于是外壳**静默退出**（stdout / stderr 全空、exit 奇怪且无输出）——排查时极具误导性。
+
+**必须用 `--login=<url>` / `--page=<url>` 这种带等号的形式**（`main.js` 的 `option()` 两种都吃，
+但调用方要给等号形式）。
+
 ## 落地计划
 
 | 步骤 | 做什么 | 状态 |
 | --- | --- | --- |
 | 1 | host 插件注册一条 overlay route（极简 HTML + 引入白名单前端脚本），验证插件前端脱离 DSH SPA 能否跑、数据对不对 | ✅ **完成**（渲染 / 数据 / 交互全通过） |
 | 2 | 搭 Electron 外壳（复用 DSH 运行时），全屏透明 + 置顶 + 动态穿透，先加载静态页测窗口行为 | ✅ **完成**（含真实点击验证） |
-| 3 | 把第 1 步的页面接进 overlay，用带凭据的 URL 打开 | 未开始 |
+| 3 | 把第 1 步的页面接进 overlay，用带凭据的 URL 打开 | ✅ **完成**（鲸鱼在桌面窗口里跑通） |
 | 4 | 白名单机制 + 生命周期（谁拉起、DSH 退出怎么收尾） | 未开始 |
 
 ## 目录
