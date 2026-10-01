@@ -13,6 +13,9 @@
  *      Windows 上 `setIgnoreMouseEvents(true, { forward: true })` 不会把 mousemove 送进渲染进程。
  *   4. 先建立会话再加载页面：DSH 的 token **只在 index 请求上生效**（会 303 + Set-Cookie），
  *      所以先拿 login URL 换 cookie，再导航到真正的 overlay 页面。
+ *   5. **插件配置一变就重新加载页面**（见 `CONFIG_WATCH`）：插件前端只在启动时读一次配置，
+ *      两个页面各存各的内存副本 —— 不重载就永远不同步。重载 = 前端重新初始化 = 重读配置，
+ *      这是不依赖任何插件内部结构的通用做法。另外留了 Ctrl+Alt+R 手动刷新兜底。
  *
  * 运行时复用 DSH 自带的那份 Electron 44（见 README），Chromium 行为与 DSH 完全一致。
  *
@@ -25,10 +28,39 @@ const { app, BrowserWindow, ipcMain, screen, session, net, globalShortcut } = re
 const { spawn } = require('node:child_process')
 const path = require('node:path')
 const fs = require('node:fs')
+const os = require('node:os')
+const crypto = require('node:crypto')
 
 /** 光标轮询间隔：25Hz 足够跟手，又不至于把 CPU 吃满。 */
 const CURSOR_POLL_MS = 40
+/** 配置指纹的采样间隔：2 秒够「即时」，读几个小文件的开销可以忽略。 */
+const CONFIG_POLL_MS = 2000
+/** 两次重载之间的最小间隔，防止连续写入把页面刷个不停。 */
+const RELOAD_MIN_GAP_MS = 1500
 const STATUS_FILE = path.join(__dirname, '.shell-status.json')
+
+const DSH_HOME = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh')
+
+/**
+ * 要监视的**纯配置**文件：内容一变，就把 overlay 页面重新加载一遍。
+ *
+ * 刻意排除掉这三类（它们会被高频写入，算进来就变成「每轮对话刷一次页面」）：
+ *   - `.dshw-usage.json`  账本 + 逐日观测（每轮对话都写）
+ *   - `.dshw-turn.json`   每轮的 seq
+ *   - `.dshw-codex.json`  Codex 会话统计缓存
+ *
+ * ⚠️ 代价要说清楚：`.dshw-usage.json` 里**也**混着一些设置（音效事件、提醒内容），
+ *    它们的变化不会被自动同步 —— 那种情况用 Ctrl+Alt+R 手动刷一次。
+ *    什么时候有插件能把设置和数据分开，就把它加进这张表。
+ */
+const CONFIG_WATCH = [
+  path.join(DSH_HOME, '.dshw-size.json'),
+  path.join(DSH_HOME, '.dshw-bubble.json'),
+  path.join(DSH_HOME, '.dshw-api.json'),
+  path.join(DSH_HOME, 'whale-roles', 'roles.json'),
+  path.join(DSH_HOME, 'whale-audio', 'audio.json'),
+  path.join(DSH_HOME, 'whale-bubble-imgs', 'bubble-imgs.json'),
+]
 
 /**
  * ⚠️ 不要用固定的 `slice(N)` 切参数。
@@ -77,11 +109,15 @@ let bootInfo = {}
 let interactive = false
 let cursorTimer = null
 let statusTimer = null
+let configTimer = null
 let watcher = null
 let lastCursor = null
 let cursorSends = 0
 let watchState = WATCH ? 'starting' : 'off'
 let overlayVisible = false
+let configRev = ''
+let reloads = 0
+let lastReloadAt = 0
 
 /* GUI 子系统的程序在 Windows 上拿不到 stdout（管道会被丢掉），所以状态一律落文件，
    否则排查时只剩「窗口没出现」这一条线索。 */
@@ -98,6 +134,7 @@ function writeStatus() {
           interactive,
           cursorSends,
           lastCursor,
+          config: { rev: configRev, reloads },
         },
         null,
         2,
@@ -206,6 +243,49 @@ function setOverlayVisible(next) {
     setInteractive(false)
   }
   writeStatus()
+}
+
+/* ---------------------------------------------------------------------------
+ * 插件配置监视：配置一变就重载页面
+ * ------------------------------------------------------------------------- */
+
+/** 把 CONFIG_WATCH 里所有文件的**内容**压成一个指纹（读不到的记 absent）。 */
+function configRevision() {
+  const hash = crypto.createHash('sha1')
+  for (const file of CONFIG_WATCH) {
+    hash.update(file)
+    try {
+      hash.update(fs.readFileSync(file))
+    } catch {
+      hash.update('absent')
+    }
+  }
+  return hash.digest('hex').slice(0, 16)
+}
+
+/** 重新加载 overlay 页面 = 插件前端重新初始化 = 重读配置。 */
+function reloadOverlay(reason) {
+  if (win === null || win.isDestroyed()) return
+  const now = Date.now()
+  if (now - lastReloadAt < RELOAD_MIN_GAP_MS) return
+  lastReloadAt = now
+  reloads += 1
+  console.log(`[shell] 重新加载 overlay（${reason}）`)
+  /* 代价：打开的菜单、正在显示的泡泡会跟着消失。这是"重新初始化"的必然结果。 */
+  win.webContents.reload()
+  writeStatus()
+}
+
+function startConfigWatch() {
+  if (configTimer !== null) clearInterval(configTimer)
+  configRev = configRevision() // 记下基线，别刚启动就重载一次
+  configTimer = setInterval(() => {
+    if (win === null || win.isDestroyed()) return
+    const next = configRevision()
+    if (next === configRev) return
+    configRev = next
+    reloadOverlay('插件配置变化')
+  }, CONFIG_POLL_MS)
 }
 
 /** 起一个常驻 PowerShell 看 DSH 的窗口状态，按行读它的 stdout。 */
@@ -325,9 +405,10 @@ async function boot() {
     }
   }
 
-  bootInfo = { shell: 'main-v3', bounds: winBounds, session: sessionInfo, page: target, pid: process.pid }
+  bootInfo = { shell: 'main-v4', bounds: winBounds, session: sessionInfo, page: target, pid: process.pid }
   startCursorWatch()
   startStatusWatch()
+  startConfigWatch()
   startWatcher()
   writeStatus()
 
@@ -357,6 +438,8 @@ if (!app.requestSingleInstanceLock()) {
       console.log('[shell] Ctrl+Alt+Q -> 退出')
       app.quit()
     })
+    /* 手动刷新：配置变了但没被自动同步时，按一下就重载页面。 */
+    globalShortcut.register('Control+Alt+R', () => reloadOverlay('手动 Ctrl+Alt+R'))
   })
 
   app.on('window-all-closed', () => app.quit())
