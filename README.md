@@ -265,6 +265,25 @@ Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*某个关�
 其实是那条命令**把自己的 runner 杀了**。所以：过滤时务必再限定进程名
 （如 `Name='msedge.exe'`），也**不要用会出现在自己命令行里的关键字去杀进程**。
 
+### 坑 7：固定 `argv.slice(N)` 会吃掉第一个开关
+
+打包后的 Electron app 里 `process.argv[1]` **就是第一个用户参数**（没有 app 路径那一项），
+开发模式下 `argv[1]` 才是 app 路径。写死 `slice(2)` 会把第一个开关整个丢掉。
+
+踩到的表现极其隐蔽：插件传 `--login=… --page=…`，`--login` 排在头一个被切掉 →
+外壳照样启动、窗口照样在、照样跟着 DSH 显示与隐藏，但 `establishSession` 压根没被调用
+（状态文件里 `via: 'none'`）→ **永远取不到数据，而且它自己不报错**。
+
+修法：从 `argv[1]` 开始扫，`--` 前缀的判断交给 `option()`。
+
+（第 3 步手动验证时没暴露纯属运气：那时第一个参数是 `--remote-debugging-port=…`，切掉无妨。）
+
+### 坑 8：别把 `connection` 当成可选依赖
+
+`ctx.get('connection')` 在 DSH 启动过程中可能返回 `undefined`（插件加载早于 service 注册），
+于是 `authenticatedUrl()` 用不上，login URL 退化成不带 token 的裸地址 —— 又是同一个哑症。
+把 `connection` 放进 `inject` 数组，Cordis 会等它就绪再加载本插件。
+
 ## 落地计划
 
 | 步骤 | 做什么 | 状态 |

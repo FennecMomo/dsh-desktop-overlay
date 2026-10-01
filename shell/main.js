@@ -30,7 +30,17 @@ const fs = require('node:fs')
 const CURSOR_POLL_MS = 40
 const STATUS_FILE = path.join(__dirname, '.shell-status.json')
 
-const argv = process.argv.slice(2)
+/**
+ * ⚠️ 不要用固定的 `slice(N)` 切参数。
+ *
+ * 打包后的 Electron app 里 **argv[1] 就是第一个用户参数**（没有 app 路径那一项），
+ * 而开发模式下 argv[1] 是 app 路径。固定切片会**吃掉第一个开关** —— 踩过的表现：
+ * `--login=` 恰好排在前面被切掉，外壳拿不到 token，`establishSession` 根本没被调用
+ * （状态文件里 `via: 'none'`），于是它起来了、也显示了，却永远取不到数据。
+ *
+ * 从 argv[1] 开始扫：exe 之后若还有 app 路径，它不是 `--` 开头，option() 会自然忽略。
+ */
+const argv = process.argv.slice(1)
 
 /**
  * 取一个开关的值，`--name value` 与 `--name=value` 两种写法都支持。

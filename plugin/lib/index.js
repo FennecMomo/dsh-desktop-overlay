@@ -21,8 +21,16 @@ import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-desktop-overlay'
 
-/* connection 用可选访问（拿不到时退化成不带 token 的 URL），subprocess 是拉起外壳的硬依赖。 */
-export const inject = ['webServer', 'subprocess']
+/**
+ * `connection` 是**硬依赖**，别把它降级成可选访问。
+ *
+ * `authenticatedUrl()` 会给 URL 加上 fresh process token —— 那是外壳换取会话 cookie 的
+ * **唯一凭据**。而 DSH 启动过程中，插件有可能在 connection 注册之前就被加载：那时
+ * `ctx.get('connection')` 返回 undefined，login URL 里就没有 token，外壳照样能起来、
+ * 照样能显示，但**永远取不到数据**（余额空着），而且它自己不会报错 —— 一个哑症。
+ * 放进 inject 之后，Cordis 会等它就绪再加载本插件。
+ */
+export const inject = ['webServer', 'subprocess', 'connection']
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PACKAGE_ROOT = dirname(HERE) // plugin/
@@ -126,11 +134,12 @@ export function apply(ctx) {
 
   const root = `http://127.0.0.1:${String(port)}/`
   const page = `http://127.0.0.1:${String(port)}${MOUNT}`
-  const connection = ctx.get('connection')
-  const login =
-    connection !== undefined && typeof connection.authenticatedUrl === 'function'
-      ? connection.authenticatedUrl(root)
-      : root
+  const login = ctx.connection.authenticatedUrl(root)
+
+  /* 自检：没有 token 就当场喊出来，别让它变成「外壳起来了但取不到数据」这种哑症。 */
+  if (!login.includes('token=')) {
+    console.error(`[dsh-desktop-overlay] login URL 缺少 token，外壳将无法建立会话：${login}`)
+  }
 
   /* token 只在 index 请求上生效：它会 303 到干净路径并种下 dsh-auth-* 会话 cookie。
      所以顺序是「先 login、再 page」——外壳内部也是这个顺序（先换 cookie 再导航）。
