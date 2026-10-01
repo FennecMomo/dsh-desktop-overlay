@@ -63,15 +63,39 @@ DSH host 半边（插件）                    桌面 overlay（Electron 外壳�
 
 ## 已知风险
 
+- **改了 host 半边必须重启 DSH 客户端。** 用 `set_bundle` 禁用再启用**不会**加载新代码：
+  Node 的 ESM 缓存按 specifier 命中，重新实例化执行的还是旧模块（现象：改动像没生效，
+  但文件时间戳确实被更新了，因为旧模块的 `apply` 又跑了一遍）。
 - Windows 上**透明窗口 + 硬件加速**历来有闪烁 / 合成问题，可能要为稳定牺牲一点性能。
 - 全屏置顶窗口**不要在启动时抢焦点**，否则会打断用户正在做的事。
 - 插件的弹出面板若大过窗口会被裁 —— 这也是窗口取"整个工作区"的原因。
+
+## 鉴权链（已验证）
+
+DSH 的 web 认证是 **token 形式的 URL**，而 token **只在 index 请求上生效**：
+
+```
+GET /?token=<process token>   →  303 See Other, location: ./
+                                 set-cookie: dsh-auth-<id>=v1.<payload>.<sig>
+                                             (HttpOnly; SameSite=Strict; Max-Age=30d)
+```
+
+拿到这条 `dsh-auth-*` cookie 之后，**同源**的所有请求（包含插件自己的路由）都放行：
+
+| 请求 | 裸请求 | 带会话 cookie |
+| --- | --- | --- |
+| `/dsh-overlay` | 200（本插件未加栅栏） | 200 |
+| `/dsh-whale/balance.json` | 401 | **200**（真实余额/今日已用） |
+| `/dsh-whale/widget.js` | 401 | **200** |
+
+所以 overlay 的正确打开顺序是「**先 login、再 page**」；Electron 外壳里同理：
+在同一个 session 里先 `loadURL(login)` 再 `loadURL(page)`。
 
 ## 落地计划
 
 | 步骤 | 做什么 | 状态 |
 | --- | --- | --- |
-| 1 | host 插件注册一条 overlay route（极简 HTML + 引入白名单前端脚本），**用普通浏览器**验证插件前端脱离 DSH SPA 能否跑、数据对不对 | 未开始 |
+| 1 | host 插件注册一条 overlay route（极简 HTML + 引入白名单前端脚本），**用普通浏览器**验证插件前端脱离 DSH SPA 能否跑、数据对不对 | route 与鉴权链已验证；**浏览器渲染待确认** |
 | 2 | 搭 Electron 外壳（复用 DSH 运行时），全屏透明 + 置顶 + 动态穿透，先加载静态页测窗口行为 | 未开始 |
 | 3 | 把第 1 步的页面接进 overlay，用带凭据的 URL 打开 | 未开始 |
 | 4 | 白名单机制 + 生命周期（谁拉起、DSH 退出怎么收尾） | 未开始 |

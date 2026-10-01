@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DSH overlay</title>
+<style>
+  /* overlay 窗口会设成 transparent；页面自身不能有底色，否则整块屏幕被盖住。 */
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; }
+  body { overflow: hidden; }
+
+  /* 启动闸门用的假 composer：不显示、不占位。挂件的判据是 querySelector，
+     display:none 的元素照样能被找到。 */
+  #root > [data-composer-input] { display: none; }
+</style>
+</head>
+<body>
+<!--
+  启动闸门 —— 这是把「插槽型」和「独立型」区分开的那个坎：
+
+  挂件脚本有页面自检，只在 DSH 主聊天界面初始化，判据是 #root 里存在 composer
+  （textarea / [contenteditable] / [data-composer-input] / [data-composer-seat] …）。
+  检测到之前它一行 DOM 都不碰，只挂着 MutationObserver 无限等 —— 表现为「无报错、也不渲染」。
+
+  overlay 页面里没有 DSH 的 SPA，所以这里给它一个最小的、隐藏的 composer 顶上。
+  #root 必须在脚本之前出现（脚本是同步的）。
+-->
+<div id="root"><div data-composer-input="true"></div></div>
+
+<!-- 诊断：脚本出错时把信息顶到标签页标题上（overlay 里没有随手可看的控制台） -->
+<script>
+window.addEventListener('error', function (e) {
+  document.title = 'ERR: ' + String((e && e.message) || 'unknown').slice(0, 80)
+})
+</script>
+
+<!--
+  白名单：想搬到桌面上的「独立型」插件前端，用相对路径（必须与 DSH 同源）。
+  加一个就多挂一个 —— 但只有自己 createElement、自己挂 body、只用相对路径 fetch、
+  不依赖 DSH 特有全局的前端能在这里跑起来。
+-->
+<script src="/dsh-whale/widget.js"></script>
+</body>
+</html>

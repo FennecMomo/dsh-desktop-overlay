@@ -1,18 +1,20 @@
 /**
  * dsh-desktop-overlay —— host 半边
  *
- * 步骤 1 的目标只有一个：**用普通浏览器验证「独立型插件的前端能否脱离 DSH 的 SPA 独立运行」**。
+ * 步骤 1 的目标只有一个：**验证「独立型插件的前端能否脱离 DSH 的 SPA 独立运行」**。
  * 所以这里只做两件事：
  *
- *   1. 注册一条 overlay 页面 route，页面里只引入白名单插件的前端脚本；
- *   2. 把一条带凭据（token）的 URL 落到文件里，方便直接从外部打开。
+ *   1. 注册一条 overlay 页面 route。页面本体在 `plugin/page/index.html` ——
+ *      **故意外置成文件**：host 代码改动要重启 DSH 客户端才生效，页面外置之后，
+ *      调整页面只要刷新浏览器（改 host 逻辑才需要重启）。
+ *   2. 把带凭据（token）的 URL 落到文件里，方便直接从外部打开。
  *
  * 页面由 DSH 自己的 webServer 提供，所以页面 origin 就是 DSH 的 origin —— 插件前端里的
  * 相对路径请求（例如 `/dsh-whale/roles.json`）都是同源的，插件代码一行都不用改。
  *
  * 窗口那一半（Electron 外壳）在 `shell/`，步骤 2 才做。
  */
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -26,37 +28,25 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const PACKAGE_ROOT = dirname(HERE) // plugin/
 const PROJECT_ROOT = dirname(PACKAGE_ROOT) // 项目根
 const URL_FILE = join(PROJECT_ROOT, '.launch-url.txt')
+const PAGE_FILE = join(PACKAGE_ROOT, 'page', 'index.html')
 
 const MOUNT = '/dsh-overlay'
 
-/**
- * 白名单：overlay 页面里要引入的前端脚本。**必须与 DSH 同源**（相对路径）。
- *
- * 只有「独立型」前端能放进来 —— 自己 createElement、自己挂 body、只用相对路径 fetch、
- * 不依赖 DSH 特有的全局。通过 slot 或 React 组件挂进 DSH UI 树的「插槽型」前端放进来
- * 也渲染不出来，因为它们需要 DSH 的 slot 运行时。
- */
-const WHITELIST = ['/dsh-whale/widget.js']
-
-function renderPage() {
-  const scripts = WHITELIST.map((src) => `<script src="${src}"></script>`).join('\n')
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DSH overlay</title>
-<style>
-  /* overlay 窗口会设成 transparent；页面自身不能有底色，否则整块屏幕被盖住。 */
-  html, body { margin: 0; padding: 0; height: 100%; background: transparent; }
-  body { overflow: hidden; }
-</style>
-</head>
-<body>
-${scripts}
-</body>
-</html>
+async function renderPage() {
+  try {
+    return await readFile(PAGE_FILE, 'utf8')
+  } catch (error) {
+    const message = String(error?.message ?? error)
+    console.error('[dsh-desktop-overlay] cannot read overlay page:', message)
+    return `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>DSH overlay: page missing</title></head>
+<body style="font:14px/1.6 system-ui;padding:24px">
+<h1>overlay 页面读不到</h1>
+<p>期望的文件：<code>${PAGE_FILE}</code></p>
+<pre>${message}</pre>
+</body></html>
 `
+  }
 }
 
 export function apply(ctx) {
@@ -65,12 +55,13 @@ export function apply(ctx) {
       ctx.webServer.register({
         kind: 'exact',
         path: MOUNT,
-        handler: (req, res) => {
+        handler: async (req, res) => {
+          const html = await renderPage()
           res.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store',
           })
-          res.end(renderPage())
+          res.end(html)
         },
       }),
     'dsh-desktop-overlay:page',
