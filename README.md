@@ -91,11 +91,58 @@ GET /?token=<process token>   →  303 See Other, location: ./
 所以 overlay 的正确打开顺序是「**先 login、再 page**」；Electron 外壳里同理：
 在同一个 session 里先 `loadURL(login)` 再 `loadURL(page)`。
 
+## 启动闸门（必须知道）
+
+挂件脚本有一条**页面自检**：只在 `#root` 里存在 composer 时初始化
+（`textarea` / `[contenteditable]` / `[data-composer-input]` / `[data-composer-seat]` …），
+检测到之前**一行 DOM 都不碰**，只挂 `MutationObserver` 无限等 —— 表现为「无报错、也不渲染」。
+
+这条自检是作者为躲开「插件页（`plugins` 面板）」加的：那是同一个 SPA 的另一个视图，
+用 React portal 渲染到 `document.body`，挂件在那儿初始化会干扰 React 渲染树。
+
+overlay 页面里没有 DSH 的 SPA，所以必须放一个**隐藏的假 composer** 顶过这道闸门
+（见 `plugin/page/index.html`）。
+
+⚠️ **这是脆弱点**：等于利用了作者的实现细节。上游若把判据改严，闸门会**静默**失效
+（又变回「无报错、也不渲染」）。长期方案是给上游提 issue 要一个正式的「独立运行」入口，
+或者在本地 fork 里改成「检测到独立环境就跳过」。
+
+## 怎么验证（可自动化）
+
+`tools/cdp-probe.mjs` 用 CDP 驱动一个**独立的**无头 Edge 实例（独立 `--user-data-dir`，
+不碰用户自己开着的浏览器）：走 login 拿会话 cookie → 打开 overlay 页面 → 注入闸门 →
+收集诊断 → 从页面内部 `fetch` 数据 → 点击角色 → 截图。
+
+```powershell
+# 1) 起一个带调试端口的无头 Edge
+msedge.exe --headless=new --remote-debugging-port=9222 `
+  --user-data-dir=$env:TEMP\dshe2e-profile --no-first-run --window-size=1280,800 about:blank
+
+# 2) 跑探针
+$env:LOGIN_URL='http://127.0.0.1:<port>/?token=<token>'
+$env:PAGE_URL='http://127.0.0.1:<port>/dsh-overlay'
+$env:OUT_PNG="$env:TEMP\overlay-shot.png"
+node tools/cdp-probe.mjs
+```
+
+## 步骤 1 的验证结果（已完成）
+
+| 检查项 | 结果 |
+| --- | --- |
+| 挂件脚本初始化 | ✅ `init: true`，建出 225 个挂件节点 |
+| 鲸鱼图片 | ✅ `/dsh-whale/image.png` 加载成功 |
+| **页面内部**数据请求 | ✅ `fetch('/dsh-whale/balance.json')` → 200，真实余额与今日已用 |
+| 交互 | ✅ 点击角色弹出泡泡，显示余额 / 今日已用 / 峰谷倒计时 |
+| 会话凭据 | ✅ login 后 11 条 cookie，同源请求全部放行 |
+
+结论：**「独立型」前端脱离 DSH 的 SPA 之后功能完整** —— 它对 DSH 页面结构的依赖，只有启动闸门那一处。
+（证据截图：`docs/step1-rendered.png`、`docs/step1-clicked.png`，不入 git。）
+
 ## 落地计划
 
 | 步骤 | 做什么 | 状态 |
 | --- | --- | --- |
-| 1 | host 插件注册一条 overlay route（极简 HTML + 引入白名单前端脚本），**用普通浏览器**验证插件前端脱离 DSH SPA 能否跑、数据对不对 | route 与鉴权链已验证；**浏览器渲染待确认** |
+| 1 | host 插件注册一条 overlay route（极简 HTML + 引入白名单前端脚本），验证插件前端脱离 DSH SPA 能否跑、数据对不对 | ✅ **完成**（渲染 / 数据 / 交互全通过） |
 | 2 | 搭 Electron 外壳（复用 DSH 运行时），全屏透明 + 置顶 + 动态穿透，先加载静态页测窗口行为 | 未开始 |
 | 3 | 把第 1 步的页面接进 overlay，用带凭据的 URL 打开 | 未开始 |
 | 4 | 白名单机制 + 生命周期（谁拉起、DSH 退出怎么收尾） | 未开始 |

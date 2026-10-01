@@ -1,6 +1,7 @@
 node_modules/
 runtime/
 .launch-url.txt
+docs/*.png
 dist/
 *.log
 .panel-*.json
