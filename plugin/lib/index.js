@@ -48,8 +48,23 @@ const MOUNT = '/dsh-overlay'
  * 只有「独立型」前端能放进来 —— 自己 createElement、自己挂 body、只用相对路径 fetch、
  * 不依赖 DSH 特有的全局。通过 slot 或 React 组件挂进 DSH UI 树的「插槽型」前端放进来
  * 也渲染不出来，因为它们需要 DSH 的 slot 运行时。
+ *
+ * 每一条都是**别的插件**提供的路由，所以这里天然带着一层跨插件依赖：条目对应的插件没装、
+ * 被停用、或者路由改了名，这一条就是一个 404。加载失败只让那个挂件消失，不影响 overlay
+ * 自己的启动（页面脚本是普通 `<script src>`，不是会 reject 掉 boot 的那种注入行）。
  */
-const WHITELIST = ['/dsh-whale/widget.js']
+const WHITELIST = [
+  '/dsh-whale/widget.js',
+  /*
+   * 弹幕浮层（dsh-danmaku）。
+   *
+   * DSH 页面里那份也是同一个文件 —— 弹幕插件把同一份脚本注进 DSH 的 index，
+   * 这里只是把它再挂一次。两边因此长得一样、说的话也一样；区别只在承载它的是哪个窗口：
+   * DSH 可见时它在会话页里，DSH 最小化时它在 overlay 这层透明置顶窗口里，
+   * 而"透明 + 置顶 + 鼠标穿透"完全由这个外壳提供，弹幕那边一行 Win32 都没有。
+   */
+  '/dsh-danmaku/v3/bubbles.js',
+]
 
 /** 把白名单注入页面：HTML 里的 `<!--WHITELIST-->` 占位符换成 script 标签。 */
 function injectWhitelist(html) {
