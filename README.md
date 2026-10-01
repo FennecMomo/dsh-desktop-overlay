@@ -199,14 +199,43 @@ preload 用 `elementFromPoint` 判断 → 回报切换穿透。穿透只影响**
 **必须用 `--login=<url>` / `--page=<url>` 这种带等号的形式**（`main.js` 的 `option()` 两种都吃，
 但调用方要给等号形式）。
 
+## 步骤 4 的验证结果（跟随 DSH，已完成）
+
+`watch-dsh.ps1`（常驻 PowerShell，300ms 看一次 DSH 窗口状态，只在变化时往 stdout 打一行）
++ 外壳联动，实测：
+
+| 场景 | 结果 |
+| --- | --- |
+| DSH 正常显示 | `watch.state=visible` → `overlayVisible=false`（鲸鱼藏着，不打扰） |
+| **最小化 DSH** | `IsIconic=true` → `watch.state=hidden` → `overlayVisible=true`（**鲸鱼自动浮出来**，229 个挂件节点） |
+| 恢复 DSH | `watch.state=visible` → `overlayVisible=false`（鲸鱼藏回去） |
+| DSH 退出 | watcher 报 `gone` → 外壳自己也退出（没人喂数据就别留着） |
+
+证据截图：`docs/step4-minimized.png`（不入 git）。
+
+### 坑 4：持有窗口的进程，不是 host 所在的进程
+
+DSH 的 host 跑在一个进程里，**窗口却属于另一个进程**（Electron 主进程），而两个都叫
+`DeepSeek Harness.exe`。所以「把 `process.pid` 当窗口 PID 传下去」是错的——host 的 pid
+根本找不到窗口。
+
+外壳改为**按进程名匹配 + 排除自己**（`-ProcessName` + `-ExcludePid`），进程名直接从自己的
+`process.execPath` 推导（外壳和 DSH 是同一个 exe，天然一致）。
+
+### 坑 5：PowerShell 的参数不能叫 `$Pid`
+
+`$PID` 是 PowerShell 的只读自动变量，`param([int]$Pid)` 一绑定就失败：
+`Cannot overwrite variable Pid because it is read-only or constant`。改叫 `-TargetPid`。
+
 ## 落地计划
 
 | 步骤 | 做什么 | 状态 |
 | --- | --- | --- |
-| 1 | host 插件注册一条 overlay route（极简 HTML + 引入白名单前端脚本），验证插件前端脱离 DSH SPA 能否跑、数据对不对 | ✅ **完成**（渲染 / 数据 / 交互全通过） |
-| 2 | 搭 Electron 外壳（复用 DSH 运行时），全屏透明 + 置顶 + 动态穿透，先加载静态页测窗口行为 | ✅ **完成**（含真实点击验证） |
-| 3 | 把第 1 步的页面接进 overlay，用带凭据的 URL 打开 | ✅ **完成**（鲸鱼在桌面窗口里跑通） |
-| 4 | 白名单机制 + 生命周期（谁拉起、DSH 退出怎么收尾） | 未开始 |
+| 1 | host 插件注册一条 overlay route（极简 HTML + 引入白名单前端脚本），验证插件前端脱离 DSH SPA 能否跑、数据对不对 | ✅ **完成** |
+| 2 | 搭 Electron 外壳（复用 DSH 运行时），全屏透明 + 置顶 + 动态穿透 | ✅ **完成** |
+| 3 | 把第 1 步的页面接进 overlay，用带凭据的 URL 打开 | ✅ **完成** |
+| 4 | 跟随 DSH：最小化/进托盘 → 浮出，恢复 → 藏起，退出 → 收尾 | ✅ **完成** |
+| 5 | host 插件自动拉起外壳 + 白名单做成配置（**需要重启 DSH 客户端才能验证**） | 未开始 |
 
 ## 目录
 
